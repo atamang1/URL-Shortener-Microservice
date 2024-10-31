@@ -5,7 +5,6 @@ const app = express();
 const bodyParser = require('body-parser');
 const dns = require('dns');
 let mongoose = require('mongoose'); 
-
 // Basic Configuration
 const port = process.env.PORT || 3000;
 
@@ -23,101 +22,89 @@ app.get('/api/hello', function(req, res) {
 });
 
 //URL shortener microservice 
+
 //connect to mongodb
 mongoose.connect(process.env.MONGO_URI, {useNewUrlParser: true, useUnifiedTopology: true});
 
 //create schema 
 let urlSchema = new mongoose.Schema({
-  original_url: String,
-  short_url: Number
+  original_url: {
+    type: String, 
+    required: true
+  },
+  short_url: {
+    type: Number, 
+    min: 1, 
+    max: 1000,
+    required: true
+  }
 }); 
 
 let Url = mongoose.model('Url', urlSchema); 
 
 //User body-parser to Parse POST Request
 app.use(bodyParser.urlencoded({ extended: false})); 
-let http_regex = /^https:\/\//;
-
-//async findOne url number 
-async function findOneUsingOriginalUrlOrShortUrl(url) {
-  try {
-    let urlData;
-    if(isNaN(url))
-    {
-       urlData = await Url.findOne({original_url: url}, {original_url: 1, short_url: 1});
-    }
-    else {
-       urlData = await Url.findOne({short_url: url}, {original_url: 1, short_url: 1});
-    }
-    //if data exits 
-    if(urlData){
-      return urlData;
-    } 
-
-    return '';
-  }
-  catch (error){
-    console.log("Error fetching data: ", error); 
-  }
-}
+let http_regex = /^(http:\/\/|https:\/\/)/;
 
 
 //post route
 app.post('/api/shorturl', async function(req, res){
   let url = req.body.url; //get url
+  let urlData; 
   //check if url conaints 'https://'
   if(!http_regex.test(url)) //if not contain
   {
     return res.json({error: 'invalid url'}); 
   }
-  //check if url exists in the database
-  const urlData =  await findOneUsingOriginalUrlOrShortUrl(url);
-  console.log("urlData: ", urlData);
 
-  if(urlData.original_url)
-  {
-    console.log('Exits: ', urlData.original_url);
+  //if url already exist 
+  urlData = await Url.findOne({original_url: url}); 
+  if(urlData){
+    return res.json({original_url: urlData.original_url, short_url: urlData.short_url});
   }
-  else 
-  {
-    console.log('Doesn\'t exits');
-    
-    let randomNumberAlreadyExits =false;
-    //get random number 
-    do 
-    {
-      //generate random number
-      let randNumber = Math.floor(Math.random()*1000) + 1;
 
-      //check if random number already exists in the database
-      let isPresent = await Url.findOne({short_url: `${randNumber}`}, {short_url: 1}); 
 
-      //check if random number exits
-      if(isPresent){
-        randomNumberAlreadyExits = true;
-      }else {
-        randomNumberAlreadyExits = false;
-
-        //add to database 
-        let newUrl = new Url({original_url: `${url}`, short_url: randNumber}); 
-        newUrl.save();
+  let randomNumber; 
+  let validNumber = true; // Start as true, will turn false if a new number is generated
+  do {
+      randomNumber = Math.floor(Math.random() * 1000) + 1;
+      urlData = await Url.findOne({ short_url: randomNumber });
+      if (!urlData) {
+          validNumber = false; // Number is valid, break the loop
+          let newUrl = new Url({ original_url: url, short_url: randomNumber });
+          try {
+              await newUrl.save();
+          } catch (error) {
+              console.error('Error saving to database:', error);
+              return res.status(500).json({ error: 'Error saving URL' });
+          }
+        
       }
-
-    }while(randomNumberAlreadyExits)
-    
-  }
-
-  let findData = await Url.findOne({original_url: `${url}`}, {_id: 0, original_url: 1, short_url: 1});
-
-  res.json(findData);
+  } while (validNumber);
+  
+    res.json({original_url: url, short_url: randomNumber});
 });
+
 
 
 //access short url 
-app.get('/api/shorturl/:short_url', async (req, res) => {
-  let urlData = await Url.findOne({short_url: req.params.short_url}, {original_url: 1}); 
-  res.redirect(urlData.original_url);
+app.get('/api/shorturl/:short_url?', async (req, res) => {
+  let shortUrl = parseInt(req.params.short_url, 10);
+
+  try {
+    let urlData = await Url.findOne({ short_url: shortUrl });
+
+    if (!urlData) {
+      return res.status(404).send({ error: 'Short URL not found' });
+    }
+
+    res.redirect(urlData.original_url);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ error: 'Internal Server Error' });
+  }
 });
+
 
 
 app.listen(port, function() {
